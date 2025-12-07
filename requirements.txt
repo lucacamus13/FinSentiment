@@ -1,0 +1,8 @@
+sec-edgar-downloader
+beautifulsoup4
+transformers
+torch
+pandas
+numpy
+matplotlib
+seaborn
