@@ -1,0 +1,15 @@
+# Datos
+data/
+data/raw/
+data/processed/
+__pycache__/
+*.pyc
+
+# IDEs
+.vscode/
+.idea/
+
+# Entorno
+.env
+venv/
+env/
