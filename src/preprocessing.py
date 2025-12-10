@@ -54,26 +54,35 @@ class TextPreprocessor:
             
         return text
 
+        return valid_sentences
+
+    def is_legal_noise(self, sentence: str) -> bool:
+        """
+        Detecta si una oración es ruido legal/disclaimer.
+        """
+        legal_keywords = [
+            'forward-looking', 'safe harbor', 'uncertainty', 'may differ', 
+            'subject to error', 'actual results', 'factors that could cause',
+            'statements regarding', 'cautionary note', 'risk factors'
+        ]
+        s_lower = sentence.lower()
+        return any(kw in s_lower for kw in legal_keywords)
+
     def split_sentences(self, text: str) -> List[str]:
         """
-        Divide el texto en oraciones.
-        No usa NLTK para mantener dependencias ligeras, usa una regex robusta.
+        Divide el texto en oraciones y filtra ruido legal.
         """
         # Regex para split por punto, interrogación o exclamación.
-        # (?<!\w\.\w.) -> Negative lookbehind para no cortar en abreviaturas como "U.S.A." (simple)
-        # (?<![A-Z][a-z]\.) -> No cortar en "Mr.", "Dr."
-        
-        # Aproximación simple y efectiva para textos largos:
-        # Partir por punto seguido de espacio y letra mayúscula.
         sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
         
         valid_sentences = []
         for s in sentences:
             s = s.strip()
-            # Filtro: Longitud mínima (evitar "1.", "Item 7.", etc.)
-            # Una oración con sentimiento debería tener al menos ~4 palabras o 20 caracteres.
+            # Filtro 1: Longitud mínima
             if len(s) > 20 and len(s.split()) >= 4:
-                valid_sentences.append(s)
+                # Filtro 2: Legal Noise (NUEVO)
+                if not self.is_legal_noise(s):
+                    valid_sentences.append(s)
                 
         return valid_sentences
 

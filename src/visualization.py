@@ -2,6 +2,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import numpy as np
+import re
+from collections import Counter
 from datetime import datetime
 import os
 
@@ -21,6 +23,39 @@ class SentimentVisualizer:
         # Configurar estilo seaborn para gráficos profesionales
         sns.set_style("whitegrid")
         sns.set_context("notebook", font_scale=1.1)
+
+    def analyze_keywords(self, sentences, top_k=10):
+        """
+        Analiza frecuencia de palabras excluyendo stopwords financieras.
+        """
+        # Stopwords expandidas (General + Financieras + 'Legal')
+        stopwords = set([
+            'the', 'and', 'of', 'to', 'in', 'a', 'that', 'for', 'is', 'on', 'with', 'as', 
+            'our', 'we', 'are', 'by', 'it', 'from', 'an', 'be', 'files', 'company',
+            # Nuevas solicitadas por usuario
+            'may', 'such', 'period', 'results', 'year', 'quarter', 'other', 'have'
+        ])
+        
+        words = []
+        for s in sentences:
+            # Tokenización simple: solo letras, minúsculas, >3 caracteres
+            tokens = re.findall(r'\b[a-zA-Z]{3,}\b', s)
+            words.extend([w.lower() for w in tokens if w.lower() not in stopwords])
+            
+        return Counter(words).most_common(top_k)
+    
+    def normalize_scores(self, df):
+        """
+        Calcula Z-Score del sentimiento para resaltar cambios relativos.
+        """
+        if len(df) < 2: return df
+        msg = df['sentiment_score'].mean()
+        std = df['sentiment_score'].std()
+        
+        if std == 0: std = 1 # Evitar división por cero
+        
+        df['z_score'] = (df['sentiment_score'] - msg) / std
+        return df
     
     def calculate_moving_average(self, series, window=3):
         """
