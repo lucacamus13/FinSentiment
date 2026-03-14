@@ -57,20 +57,43 @@ class SentimentVisualizer:
         
         mark_data_success = False
         try:
-            # yf.Ticker().history() es más estable que yf.download() en servidores cloud
-            tkr = yf.Ticker(ticker)
-            market_df = tkr.history(start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'))
+            import requests
+            import datetime
             
-            if not market_df.empty and 'Close' in market_df.columns:
-                market_data = market_df['Close']
-                # QUITAR TIMEZONE: Matplotlib ignora series con Tz si el eje principal es Naive
-                if market_data.index.tz is not None:
-                    market_data.index = market_data.index.tz_localize(None)
-                mark_data_success = True
+            # Convertir fechas a timestamps UNIX para la API v8 de Yahoo
+            start_ts = int(start.timestamp())
+            end_ts = int(end.timestamp())
+            
+            url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?period1={start_ts}&period2={end_ts}&interval=1d"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5"
+            }
+            
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get('chart', {}).get('result'):
+                    result = data['chart']['result'][0]
+                    timestamps = result.get('timestamp', [])
+                    closes = result['indicators']['quote'][0].get('close', [])
+                    
+                    if timestamps and closes:
+                        # Recrear el formato de serie temporal de pandas para matplolib
+                        dates_dt = [datetime.datetime.fromtimestamp(t) for t in timestamps]
+                        market_data = pd.Series(closes, index=pd.DatetimeIndex(dates_dt))
+                        market_data.index = market_data.index.tz_localize(None) # asegurar naive
+                        mark_data_success = True
+                    else:
+                        market_data = None
+                else:
+                    market_data = None
             else:
+                print(f"[!] HTTP {res.status_code} desde Yahoo API.")
                 market_data = None
         except Exception as e:
-            print(f"[!] Error bajando precios: {e}")
+            print(f"[!] Error bajando precios directo de la API HTTP: {e}")
             market_data = None
             
         # 3. Gráfico Doble Eje
