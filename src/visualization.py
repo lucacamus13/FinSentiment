@@ -1,149 +1,89 @@
 import matplotlib.pyplot as plt
-import seaborn as sns
+import seaborn as pd_sns
 import pandas as pd
 import numpy as np
+import yfinance as yf
+import os
 import re
 from collections import Counter
-from datetime import datetime
-import os
 
 class SentimentVisualizer:
-    """
-    Módulo para visualizar la evolución temporal del sentimiento financiero.
-    """
-    
-    def __init__(self, output_dir="reports/figures"):
-        """
-        Args:
-            output_dir: Directorio donde se guardarán los gráficos
-        """
+    def __init__(self, output_dir="results"):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
-        
-        # Configurar estilo seaborn para gráficos profesionales
-        sns.set_style("whitegrid")
-        sns.set_context("notebook", font_scale=1.1)
+        # Configurar estilos
+        pd_sns.set_style("whitegrid")
+
+    def get_market_data(self, ticker, start_date, end_date):
+        print(f"[*] Descargando precios de {ticker}...")
+        df = yf.download(ticker, start=start_date, end=end_date, progress=False)
+        return df['Close']
 
     def analyze_keywords(self, sentences, top_k=10):
-        """
-        Analiza frecuencia de palabras excluyendo stopwords financieras.
-        """
-        # Stopwords expandidas (General + Financieras + 'Legal')
+        # Stopwords expandidas (Legal + Financiero Genérico)
         stopwords = set([
-            'the', 'and', 'of', 'to', 'in', 'a', 'that', 'for', 'is', 'on', 'with', 'as', 
+            'the', 'and', 'of', 'to', 'in', 'a', 'that', 'for', 'is', 'on', 'with', 'as',
             'our', 'we', 'are', 'by', 'it', 'from', 'an', 'be', 'files', 'company',
-            # Nuevas solicitadas por usuario
-            'may', 'such', 'period', 'results', 'year', 'quarter', 'other', 'have'
+            # Solicitadas por el usuario:
+            'may', 'such', 'period', 'results', 'year', 'quarter', 'other', 'have', 'million', 'billion'
         ])
-        
         words = []
         for s in sentences:
-            # Tokenización simple: solo letras, minúsculas, >3 caracteres
             tokens = re.findall(r'\b[a-zA-Z]{3,}\b', s)
             words.extend([w.lower() for w in tokens if w.lower() not in stopwords])
-            
         return Counter(words).most_common(top_k)
-    
-    def normalize_scores(self, df):
+
+    def plot_sentiment_trend(self, df_results, ticker):
         """
-        Calcula Z-Score del sentimiento para resaltar cambios relativos.
+        Calcula Z-Score y cruza contra YFinance. 
+        df_results debe tener 'date', 'pos_val', 'neg_val'
         """
-        if len(df) < 2: return df
-        msg = df['sentiment_score'].mean()
-        std = df['sentiment_score'].std()
-        
-        if std == 0: std = 1 # Evitar división por cero
-        
-        df['z_score'] = (df['sentiment_score'] - msg) / std
-        return df
-    
-    def calculate_moving_average(self, series, window=3):
-        """
-        Calcula la media móvil simple.
-        
-        Args:
-            series: Serie de pandas con los datos
-            window: Ventana para la media móvil
-        """
-        return series.rolling(window=window, min_periods=1).mean()
-    
-    def plot_sentiment_trend(self, df, ticker, window=3):
-        """
-        Genera gráfico de evolución del sentimiento a lo largo del tiempo.
-        
-        Args:
-            df: DataFrame con columnas 'date' y 'sentiment_score'
-            ticker: Símbolo del ticker (ej. 'AAPL')
-            window: Ventana para media móvil
-            
-        Returns:
-            Path al archivo PNG generado
-        """
-        # Validaciones
-        if df.empty:
-            print("[!] DataFrame vacío, no se puede generar gráfico")
+        if df_results.empty or 'date' not in df_results.columns:
             return None
             
-        if 'date' not in df.columns or 'sentiment_score' not in df.columns:
-            print("[!] DataFrame debe tener columnas 'date' y 'sentiment_score'")
-            return None
+        # 1. Normalización (Z-Score)
+        summary = df_results.groupby('date')[['pos_val', 'neg_val']].mean()
+        summary['net_score'] = summary['pos_val'] - summary['neg_val']
+    
+        mean_score = summary['net_score'].mean()
+        std_score = summary['net_score'].std()
+        if std_score == 0: std_score = 1 # Evitar Div0
+        summary['z_score'] = (summary['net_score'] - mean_score) / std_score
         
-        # Ordenar por fecha
-        df = df.sort_values('date').copy()
+        # 2. Descarga Precios
+        dates = pd.to_datetime(summary.index).sort_values()
+        start = dates.min() - pd.Timedelta(days=30)
+        end = dates.max() + pd.Timedelta(days=30)
         
-        # Calcular media móvil
-        df['ma'] = self.calculate_moving_average(df['sentiment_score'], window)
+        try:
+            market_data = self.get_market_data(ticker, start, end)
+        except Exception as e:
+            print(f"[!] Error bajando precios: {e}")
+            market_data = None
+            
+        # 3. Gráfico Doble Eje
+        fig, ax1 = plt.subplots(figsize=(12, 6))
+        color = '#2E86AB'
+        ax1.set_xlabel('Fecha')
+        ax1.set_ylabel('Sentiment Z-Score (Normalizado)', color=color, fontweight='bold')
+        ax1.plot(pd.to_datetime(summary.index), summary['z_score'], 'o-', color=color, linewidth=2)
+        ax1.axhline(0, color='gray', linestyle='--', alpha=0.5, label='Media Histórica')
+        ax1.tick_params(axis='y', labelcolor=color)
         
-        # Crear figura
-        fig, ax = plt.subplots(figsize=(12, 6))
-        
-        # Plot del sentimiento real
-        ax.plot(df['date'], df['sentiment_score'], 
-                marker='o', linewidth=2, markersize=8,
-                label='Sentiment Score', color='#2E86AB', alpha=0.7)
-        
-        # Plot de la media móvil
-        ax.plot(df['date'], df['ma'], 
-                linewidth=2.5, label=f'Media Móvil ({window} períodos)',
-                color='#F24236', linestyle='--', alpha=0.8)
-        
-        # Línea de referencia en 0 (sentimiento neutral)
-        ax.axhline(y=0, color='gray', linestyle='-', linewidth=0.8, alpha=0.5)
-        
-        # Sombreado de área según sentimiento
-        ax.fill_between(df['date'], df['sentiment_score'], 0,
-                        where=(df['sentiment_score'] > 0),
-                        alpha=0.1, color='green', label='Sentimiento Positivo')
-        ax.fill_between(df['date'], df['sentiment_score'], 0,
-                        where=(df['sentiment_score'] <= 0),
-                        alpha=0.1, color='red', label='Sentimiento Negativo')
-        
-        # Etiquetas y título
-        ax.set_xlabel('Fecha del Reporte', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Sentiment Score\n(Positivo - Negativo)', fontsize=12, fontweight='bold')
-        ax.set_title(f'Evolución del Sentimiento Financiero: {ticker.upper()}', 
-                    fontsize=14, fontweight='bold', pad=20)
-        
-        # Leyenda
-        ax.legend(loc='best', framealpha=0.9)
-        
-        # Grid más sutil
-        ax.grid(True, alpha=0.3)
-        
-        # Rotar etiquetas de fecha si hay muchas
-        if len(df) > 5:
-            plt.xticks(rotation=45, ha='right')
-        
-        # Ajustar layout
+        if market_data is not None and not market_data.empty:
+            ax2 = ax1.twinx()
+            color = '#F24236'
+            ax2.set_ylabel(f'Precio {ticker} ($)', color=color, fontweight='bold')
+            ax2.plot(market_data.index, market_data, color=color, alpha=0.6, linewidth=1.5)
+            ax2.tick_params(axis='y', labelcolor=color)
+            
+        plt.title(f"{ticker}: Precio vs Sentimiento Relativo (Z-Score)", fontsize=14)
         plt.tight_layout()
         
-        # Guardar
-        output_path = os.path.join(self.output_dir, f"{ticker}_sentiment_trend.png")
+        output_path = os.path.join(self.output_dir, f"{ticker}_hybrid_chart.png")
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
-        
-        print(f"[+] Gráfico guardado en: {output_path}")
-        return output_path
+        return output_path, summary
 
 
 if __name__ == "__main__":

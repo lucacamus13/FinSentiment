@@ -1,77 +1,84 @@
-import torch
-from transformers import BertTokenizer, BertForSequenceClassification
 import pandas as pd
 import numpy as np
-from typing import List, Dict
+from typing import List
 
 class FinBertModel:
-    """
-    Wrapper for ProsusAI/finbert model specialized in financial sentiment.
-    """
-    def __init__(self):
-        print("[*] Cargando modelo FinBERT...")
-        self.model_name = "ProsusAI/finbert"
-        self.tokenizer = BertTokenizer.from_pretrained(self.model_name)
-        self.model = BertForSequenceClassification.from_pretrained(self.model_name)
-        self.model.eval()
+    def __init__(self, load_callback=None):
+        if load_callback: load_callback("Cargando entorno base (PyTorch)...")
+        import torch
         
-        # Mapeo de IDs a etiquetas (check config del modelo para estar seguros)
-        # ProsusAI/finbert usa: 0: positive, 1: negative, 2: neutral
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"[*] Cargando FinBERT en {self.device}...")
+        
+        if load_callback: load_callback("Cargando librerías NLP (Transformers)...")
+        from transformers import BertTokenizer, BertForSequenceClassification
+        
+        if load_callback: load_callback("Descargando/Cargando Tokenizador de red FinBERT...")
+        self.tokenizer = BertTokenizer.from_pretrained("ProsusAI/finbert")
+        
+        if load_callback: load_callback("Descargando/Cargando Pesos del Modelo FinBERT (~400MB)...")
+        self.model = BertForSequenceClassification.from_pretrained("ProsusAI/finbert").to(self.device)
         self.labels = {0: 'positive', 1: 'negative', 2: 'neutral'}
-        print("[+] Modelo cargado correctamente.")
 
-    def predict_batch(self, sentences: List[str]) -> pd.DataFrame:
+    def predict_batch(self, sentences: List[str], batch_size: int = 32, progress_callback=None) -> pd.DataFrame:
         """
-        Analiza una lista de oraciones y devuelve un DataFrame con los resultados.
+        Analiza una lista de oraciones en lotes (batches) y devuelve un DataFrame con los resultados.
+        Permite usar un callback para reportar el progreso de la inferencia iterativamente.
         """
         if not sentences:
             return pd.DataFrame()
 
-        # Tokenización masiva
-        inputs = self.tokenizer(
-            sentences, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True, 
-            max_length=512
-        )
-        
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            # Softmax para obtener probabilidades
-            probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-            
-        # Convertir a numpy
-        probs_np = probs.numpy()
-        
-        # Construir DataFrame
         results = []
-        for i, sentence in enumerate(sentences):
-            row = {
-                "sentence": sentence,
-                "positive": probs_np[i][0],
-                "negative": probs_np[i][1],
-                "neutral": probs_np[i][2]
-            }
-            # Etiqueta dominante
-            max_idx = np.argmax(probs_np[i])
-            row["sentiment_label"] = self.labels[max_idx]
-            row["sentiment_score"] = probs_np[i][max_idx]
-            results.append(row)
+        total_sentences = len(sentences)
+        
+        for i in range(0, total_sentences, batch_size):
+            batch_sentences = sentences[i:i+batch_size]
+            
+            # Tokenización del lote actual
+            inputs = self.tokenizer(
+                batch_sentences, 
+                return_tensors="pt", 
+                padding=True, 
+                truncation=True, 
+                max_length=512
+            ).to(self.device)
+            
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                # Softmax para obtener probabilidades
+                probs = torch.nn.functional.softmax(outputs.logits, dim=-1).cpu().numpy()
+                
+            # Construir resultados
+            for j, sentence in enumerate(batch_sentences):
+                idx = np.argmax(probs[j])
+                row = {
+                    "sentence": sentence,
+                    "sentiment_label": self.labels[idx],
+                    "pos_val": probs[j][0],
+                    "neg_val": probs[j][1],
+                    "neutral_val": probs[j][2],
+                }
+                results.append(row)
+                
+            if progress_callback:
+                current_processed = min(i + batch_size, total_sentences)
+                progress_callback(current_processed, total_sentences)
             
         return pd.DataFrame(results)
 
-def aggregate_sentiment(df: pd.DataFrame) -> Dict:
+def aggregate_sentiment(df: pd.DataFrame):
     """
-    Calcula métricas agregadas para todo el documento.
-    Retorna un diccionario con el score global.
+    Calcula métricas agregadas asumiendo las columnas pos_val y neg_val.
     """
     if df.empty:
-        return {"net_sentiment": 0, "dominant_sentiment": "neutral"}
+        return {
+            "net_sentiment": 0, "avg_positive": 0, "avg_negative": 0, 
+            "avg_neutral": 0, "dominant_sentiment": "neutral", "sentence_count": 0
+        }
         
-    # FinSentiment Score: (Positivo - Negativo) promedio
-    avg_pos = df["positive"].mean()
-    avg_neg = df["negative"].mean()
+    avg_pos = df["pos_val"].mean()
+    avg_neg = df["neg_val"].mean()
+    avg_neu = df["neutral_val"].mean()
     
     net_score = avg_pos - avg_neg
     
@@ -83,6 +90,7 @@ def aggregate_sentiment(df: pd.DataFrame) -> Dict:
         "net_sentiment": net_score,
         "avg_positive": avg_pos,
         "avg_negative": avg_neg,
+        "avg_neutral": avg_neu,
         "dominant_sentiment": dominant,
         "sentence_count": len(df)
     }

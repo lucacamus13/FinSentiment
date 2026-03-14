@@ -80,79 +80,43 @@ class SECLoader:
             
             # Buscar puntos de corte
             m_end_7a = end_pattern_7a.search(text, start_idx)
-            m_end_8 = end_pattern_8.search(text, start_idx)
-            
-            # También para 10-Q el corte podría ser Item 3
-            end_pattern_3 = re.compile(r'item\s+3\.?\s+quantitative', re.IGNORECASE)
-            m_end_3 = end_pattern_3.search(text, start_idx)
-            
-            indices = []
-            if m_end_7a: indices.append(m_end_7a.start())
-            if m_end_8: indices.append(m_end_8.start())
-            if m_end_3: indices.append(m_end_3.start())
-            
-            if indices:
-                end_idx = min(indices) # El cierre más cercano
-                candidate = text[start_idx:end_idx]
-                
-                # Filtro de calidad simple: longitud mínima
-                if len(candidate) > 1000:
-                    best_text = candidate
-                    break
-        
-        return best_text
+            print(f"[!] Error en descarga: {e}")
 
-    def process_local_filings(self, ticker: str):
-        """
-        Recorre los archivos descargados para el ticker, extrae MD&A y guarda en processed.
-        """
-        ticker_path = os.path.join(self.raw_dir, "sec-edgar-filings", ticker)
-        if not os.path.exists(ticker_path):
-            print(f"⚠️ No se encontraron datos crudos para {ticker}. Ejecuta download primero.")
-            return
+    def extract_date(self, content: str) -> str:
+        patterns = [
+            r'FILED AS OF DATE:\s+(\d{8})',
+            r'CONFORMED PERIOD OF REPORT:\s+(\d{8})'
+        ]
+        for p in patterns:
+            match = re.search(p, content)
+            if match:
+                date_str = match.group(1)
+                return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+        return None
 
-        print(f"[*] [Procesamiento] Extrayendo MD&A para {ticker}...")
-        
-        for root, dirs, files in os.walk(ticker_path):
+    def extract_mda(self, html_content: str) -> str:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        text = soup.get_text(separator='\n')
+        patterns = [r'Item\s+7\.\s+Management', r"Management's\s+Discussion", r'Item\s+7\.']
+        start_idx = -1
+        for p in patterns:
+            match = re.search(p, text, re.IGNORECASE)
+            if match: start_idx = match.start(); break
+        if start_idx == -1: return text[:50000]
+        return text[start_idx:start_idx+30000]
+
+    def process_filings(self, ticker: str):
+        raw_path = os.path.join(self.data_dir, "raw", "sec-edgar-filings", ticker)
+        processed_data = []
+        for root, _, files in os.walk(raw_path):
             for file in files:
-                if file.endswith(".txt"): # El formato que baja sec-edgar-downloader
-                    full_path = os.path.join(root, file)
-                    
-                    # Identificar tipo (10-K o 10-Q) y año/periodo aproximado del path
-                    # Path: .../10-K/ACCESSION-NUMBER/full-submission.txt
-                    parts = full_path.split(os.sep)
-                    doc_type = "UNKNOWN"
-                    if "10-K" in parts: doc_type = "10-K"
-                    elif "10-Q" in parts: doc_type = "10-Q"
-                    
-                    # ID único del reporte (Accession Number)
-                    accession = parts[-2]
-                    
-                    with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        raw_content = f.read()
-                    
-                    mda_text = self.extract_mda(raw_content)
-                    
-                    if mda_text:
-                        out_name = f"{ticker}_{doc_type}_{accession}_MDA.txt"
-                        out_path = os.path.join(self.processed_dir, out_name)
-                        
-                        with open(out_path, 'w', encoding='utf-8') as f_out:
-                            f_out.write(mda_text)
-                            
-                        print(f"   Reference: {doc_type} {accession} -> Guardado ({len(mda_text)} chars)")
-                    else:
-                        print(f"   [!] No se pudo extraer MD&A de {doc_type} {accession}")
-
-if __name__ == "__main__":
-    # Prueba unitaria del módulo
-    import sys
-    base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    data_path = os.path.join(base_path, "data")
-    
-    loader = SECLoader(data_dir=data_path)
-    
-    # Prueba con Tesla (TSLA)
-    TICKER = "TSLA"
-    loader.download_filings(TICKER, amount=1)
-    loader.process_local_filings(TICKER)
+                if file.lower().endswith(".txt") and "primary" not in file:
+                    try:
+                        with open(os.path.join(root, file), 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        mda = self.extract_mda(content)
+                        date = self.extract_date(content)
+                        if len(mda) > 500:
+                            processed_data.append({'text': mda, 'date': date, 'accession': file})
+                    except: pass
+        return processed_data
