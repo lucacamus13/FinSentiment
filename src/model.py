@@ -28,6 +28,8 @@ class FinBertModel:
         if not sentences:
             return pd.DataFrame()
 
+        import torch
+
         results = []
         total_sentences = len(sentences)
         
