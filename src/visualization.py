@@ -57,21 +57,15 @@ class SentimentVisualizer:
         
         mark_data_success = False
         try:
-            import requests
-            session = requests.Session()
-            session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            })
+            # yf.Ticker().history() es más estable que yf.download() en servidores cloud
+            tkr = yf.Ticker(ticker)
+            market_df = tkr.history(start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'))
             
-            # Formateamos las fechas a string para evitar conflictos al invocar yfinance
-            market_df = yf.download(ticker, start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'), progress=False, session=session)
-            if not market_df.empty:
+            if not market_df.empty and 'Close' in market_df.columns:
                 market_data = market_df['Close']
-                # Si yfinance devuelve un DataFrame multidimensional, tomamos la primera serie
-                if isinstance(market_data, pd.DataFrame):
-                    market_data = market_data.iloc[:, 0]
                 # QUITAR TIMEZONE: Matplotlib ignora series con Tz si el eje principal es Naive
-                market_data.index = market_data.index.tz_localize(None)
+                if market_data.index.tz is not None:
+                    market_data.index = market_data.index.tz_localize(None)
                 mark_data_success = True
             else:
                 market_data = None
