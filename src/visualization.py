@@ -56,7 +56,17 @@ class SentimentVisualizer:
         end = dates.max() + pd.Timedelta(days=30)
         
         try:
-            market_data = self.get_market_data(ticker, start, end)
+            # Formateamos las fechas a string para evitar conflictos al invocar yfinance
+            market_df = yf.download(ticker, start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'), progress=False)
+            if not market_df.empty:
+                market_data = market_df['Close']
+                # Si yfinance devuelve un DataFrame multidimensional, tomamos la primera serie
+                if isinstance(market_data, pd.DataFrame):
+                    market_data = market_data.iloc[:, 0]
+                # QUITAR TIMEZONE: Matplotlib ignora series con Tz si el eje principal es Naive
+                market_data.index = market_data.index.tz_localize(None)
+            else:
+                market_data = None
         except Exception as e:
             print(f"[!] Error bajando precios: {e}")
             market_data = None
