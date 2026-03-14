@@ -39,7 +39,7 @@ class SentimentVisualizer:
         df_results debe tener 'date', 'pos_val', 'neg_val'
         """
         if df_results.empty or 'date' not in df_results.columns:
-            return None
+            return None, None, False
             
         # 1. Normalización (Z-Score)
         summary = df_results.groupby('date')[['pos_val', 'neg_val']].mean()
@@ -55,6 +55,7 @@ class SentimentVisualizer:
         start = dates.min() - pd.Timedelta(days=30)
         end = dates.max() + pd.Timedelta(days=30)
         
+        mark_data_success = False
         try:
             # Formateamos las fechas a string para evitar conflictos al invocar yfinance
             market_df = yf.download(ticker, start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'), progress=False)
@@ -65,6 +66,7 @@ class SentimentVisualizer:
                     market_data = market_data.iloc[:, 0]
                 # QUITAR TIMEZONE: Matplotlib ignora series con Tz si el eje principal es Naive
                 market_data.index = market_data.index.tz_localize(None)
+                mark_data_success = True
             else:
                 market_data = None
         except Exception as e:
@@ -80,12 +82,17 @@ class SentimentVisualizer:
         ax1.axhline(0, color='gray', linestyle='--', alpha=0.5, label='Media Histórica')
         ax1.tick_params(axis='y', labelcolor=color)
         
-        if market_data is not None and not market_data.empty:
+        if mark_data_success and market_data is not None:
             ax2 = ax1.twinx()
             color = '#F24236'
             ax2.set_ylabel(f'Precio {ticker} ($)', color=color, fontweight='bold')
             ax2.plot(market_data.index, market_data, color=color, alpha=0.6, linewidth=1.5)
             ax2.tick_params(axis='y', labelcolor=color)
+        else:
+            # MARCA DE AGUA SI YFINANCE FALLA SILENCIOSAMENTE DESDE LA NUBE
+            ax1.text(0.5, 0.5, f"⚠️ Yahoo Finance bloqueó la descarga del precio de {ticker}", 
+                     horizontalalignment='center', verticalalignment='center',
+                     transform=ax1.transAxes, color='red', alpha=0.5, fontsize=12)
             
         plt.title(f"{ticker}: Precio vs Sentimiento Relativo (Z-Score)", fontsize=14)
         plt.tight_layout()
@@ -93,7 +100,7 @@ class SentimentVisualizer:
         output_path = os.path.join(self.output_dir, f"{ticker}_hybrid_chart.png")
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
-        return output_path, summary
+        return output_path, summary, mark_data_success
 
 
 if __name__ == "__main__":
