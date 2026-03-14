@@ -1,10 +1,11 @@
-streamlit==1.32.0
-pandas==2.2.1
-numpy==1.26.4
-yfinance==0.2.37
-torch==2.2.1
-transformers==4.38.2
-sec-edgar-downloader==3.0.2
-beautifulsoup4==4.12.3
-matplotlib==3.8.3
-seaborn==0.13.2
+--extra-index-url https://download.pytorch.org/whl/cpu
+streamlit>=1.30.0
+pandas>=2.0.0
+numpy>=1.24.0
+yfinance
+torch>=2.0.0
+transformers>=4.30.0
+sec-edgar-downloader
+beautifulsoup4
+matplotlib
+seaborn
