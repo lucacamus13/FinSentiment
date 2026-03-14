@@ -57,8 +57,14 @@ class SentimentVisualizer:
         
         mark_data_success = False
         try:
+            import requests
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            })
+            
             # Formateamos las fechas a string para evitar conflictos al invocar yfinance
-            market_df = yf.download(ticker, start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'), progress=False)
+            market_df = yf.download(ticker, start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'), progress=False, session=session)
             if not market_df.empty:
                 market_data = market_df['Close']
                 # Si yfinance devuelve un DataFrame multidimensional, tomamos la primera serie
