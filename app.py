@@ -145,7 +145,7 @@ def run_analysis(ticker, num_reports):
     final_df = pd.concat(all_results, ignore_index=True)
     
     # Generar Chart híbrido y resumen
-    plot_path, summary_df = viz.plot_sentiment_trend(final_df, ticker=ticker)
+    plot_path, summary_df, ys_success = viz.plot_sentiment_trend(final_df, ticker=ticker)
     
     # Guardar CSV crudo
     csv_path = os.path.join(output_dir, f"{ticker}_finsentiment_raw.csv")
@@ -154,6 +154,9 @@ def run_analysis(ticker, num_reports):
     progress_bar.progress(100)
     status_text.success(f"¡Análisis completado para {ticker}!")
     
+    if not ys_success:
+        st.warning("⚠️ Yahoo Finance bloqueó la descarga del historial de precios (Típico en servidores Cloud gratuitos). El gráfico solo muestra la tendencia del Sentimiento Z-Score.")
+
     # Construir un mini dataframe para la vista "Cruda" resumiendo por fechas para no asfixiar a streamlit
     display_df = final_df[['date', 'sentence', 'sentiment_label', 'pos_val', 'neg_val']].copy()
     display_df['net_score'] = display_df['pos_val'] - display_df['neg_val']
