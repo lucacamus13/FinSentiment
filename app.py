@@ -4,7 +4,52 @@ from datetime import datetime, timedelta
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
-import yfinance as yf
+import requests
+import time
+
+
+def get_yahoo_prices(tickers, start_date, end_date):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    all_data = {}
+    
+    for ticker in tickers:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+            params = {
+                'period1': int(start_date.timestamp()),
+                'period2': int(end_date.timestamp()),
+                'interval': '1d',
+                'events': 'history'
+            }
+            
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'chart' in data and 'result' in data['chart'] and data['chart']['result']:
+                    result = data['chart']['result'][0]
+                    if 'timestamp' in result and 'indicators' in result:
+                        timestamps = result['timestamp']
+                        close_prices = result['indicators']['quote'][0]['close']
+                        
+                        df = pd.DataFrame({
+                            'Date': pd.to_datetime(timestamps, unit='s'),
+                            ticker: close_prices
+                        })
+                        df.set_index('Date', inplace=True)
+                        all_data[ticker] = df[ticker]
+                        
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"Error downloading {ticker}: {e}")
+            continue
+    
+    if all_data:
+        return pd.DataFrame(all_data)
+    return pd.DataFrame()
 
 # Importar módulos del proyecto
 from src.ingestion import SECLoader
@@ -160,15 +205,14 @@ def run_sector_analysis(tickers_list, num_reports):
     
     try:
         with st.spinner("Descargando datos de mercado desde Yahoo Finance..."):
-            market_data = yf.download(tickers_list, start=min_date, end=max_date, progress=False, auto_adjust=True)
+            close_prices = get_yahoo_prices(tickers_list, min_date, max_date)
         
-        if market_data.empty:
+        if close_prices.empty:
             st.warning("⚠️ Yahoo Finance bloquea descargas desde servidores cloud. El gráfico Alpha Hunter mostrará solo Z-Score.")
             df_latest['price_return_6m'] = 0.0
         else:
-            close_prices = market_data['Close']
             if len(tickers_list) == 1:
-                close_prices = pd.DataFrame({tickers_list[0]: close_prices})
+                close_prices = pd.DataFrame({tickers_list[0]: close_prices[tickers_list[0]]})
             
             perf_list = []
             for _, row in df_latest.iterrows():
