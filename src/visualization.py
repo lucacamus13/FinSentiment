@@ -125,6 +125,55 @@ class SentimentVisualizer:
         plt.close()
         return output_path, summary, mark_data_success
 
+    def plot_risk_heatmap(self, df_risks, ticker):
+        """
+        Genera un Heatmap (Años vs Categorías) basado en la intensidad del sentimiento negativo.
+        df_risks debe contener: 'date', 'risk_category', 'neg_val'
+        """
+        if df_risks.empty or 'date' not in df_risks.columns or 'risk_category' not in df_risks.columns:
+            return None
+            
+        # Extraer el año para agrupar
+        # Hacemos una copia para no alterar el original
+        df_copy = df_risks.copy()
+        df_copy['year'] = pd.to_datetime(df_copy['date']).dt.year
+        
+        # Filtrar 'General / Other' para enfocarnos en los riesgos específicos
+        df_filtered = df_copy[df_copy['risk_category'] != 'General / Other']
+        if df_filtered.empty:
+            return None
+            
+        # Agrupar por Año y Categoría, promediando el sentimiento negativo
+        summary = df_filtered.groupby(['year', 'risk_category'])['neg_val'].mean().reset_index()
+        
+        # Crear tabla pivot: Filas=Categorías, Columnas=Años, Valores=neg_val
+        pivot_table = summary.pivot(index='risk_category', columns='year', values='neg_val')
+        
+        # Rellenar NaNs con 0 (sin menciones de ese riesgo = sin intensidad detectada)
+        pivot_table = pivot_table.fillna(0)
+        
+        fig, ax = plt.subplots(figsize=(10, max(4, len(pivot_table)*0.8)))
+        
+        pd_sns.heatmap(
+            pivot_table, 
+            cmap='Reds', # Rojo intenso para mayor miedo
+            annot=True, 
+            fmt=".2f", 
+            linewidths=.5,
+            cbar_kws={'label': 'Intensidad de Riesgo (Prob. Negativa)'},
+            ax=ax
+        )
+        
+        plt.title(f"{ticker}: Heatmap de Factores de Riesgo (Item 1A)", fontsize=14, fontweight='bold')
+        plt.ylabel('Categoría de Riesgo')
+        plt.xlabel('Año Fiscal')
+        plt.tight_layout()
+        
+        output_path = os.path.join(self.output_dir, f"{ticker}_risk_heatmap.png")
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        return output_path
 
 if __name__ == "__main__":
     # Test con datos sintéticos

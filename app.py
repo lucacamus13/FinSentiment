@@ -300,32 +300,49 @@ def run_analysis(ticker, num_reports):
     # ---------------------------------------------------------
     # FASE 2 & 3: NLP + FINBERT (v2.1 con Filtro Legal)
     # ---------------------------------------------------------
-    all_results = []
+    all_mda_results = []
+    all_risk_results = []
     
     for i, doc in enumerate(raw_docs):
         status_text.info(f"Fases 2-3: Procesando documento {i+1}/{len(raw_docs)} (Fecha: {doc.get('date', 'N/A')})...")
         
-        # Preprocesamiento v2.1 (Aplica filtro Legal Noise automáticamente en split)
-        cleaned_text = preprocessor.clean_text(doc['text'])
-        sentences = preprocessor.split_sentences(cleaned_text)
+        # 1. Procesar MD&A (Item 7)
+        cleaned_mda = preprocessor.clean_text(doc.get('text', ''))
+        mda_sentences = preprocessor.split_sentences(cleaned_mda, filter_legal=True)
         
-        if not sentences:
-            continue
+        if mda_sentences:
+            sub_progress = st.progress(0, text=f"Inferencia MD&A: procesando {len(mda_sentences)} oraciones...")
+            def mda_callback(current, total):
+                if sub_progress:
+                    sub_progress.progress(current / total, text=f"Inferencia MD&A: {current}/{total} completadas")
             
-        sub_progress = st.progress(0, text=f"Inferencia FinBERT: procesando {len(sentences)} oraciones válidas...")
+            df_mda = model.predict_batch(mda_sentences, batch_size=32, progress_callback=mda_callback)
+            sub_progress.empty()
+            
+            if not df_mda.empty:
+                df_mda['date'] = doc.get('date', '2023-01-01')
+                df_mda['accession'] = doc.get('accession', '')
+                all_mda_results.append(df_mda)
+
+        # 2. Procesar Risk Factors (Item 1A)
+        cleaned_risk = preprocessor.clean_text(doc.get('risk_text', ''))
+        risk_sentences = preprocessor.split_sentences(cleaned_risk, filter_legal=False)
         
-        def batch_callback(current, total):
-            ratio = current / total
-            sub_progress.progress(ratio, text=f"Inferencia FinBERT: {current}/{total} completadas (Lotes de 32)")
+        if risk_sentences:
+            sub_progress_risk = st.progress(0, text=f"Inferencia Item 1A (Riesgos): procesando {len(risk_sentences)} oraciones...")
+            def risk_callback(current, total):
+                if sub_progress_risk:
+                    sub_progress_risk.progress(current / total, text=f"Inferencia Riesgos: {current}/{total} completadas")
+                
+            df_risk = model.predict_batch(risk_sentences, batch_size=32, progress_callback=risk_callback)
+            sub_progress_risk.empty()
             
-        df_sent = model.predict_batch(sentences, batch_size=32, progress_callback=batch_callback)
-        sub_progress.empty()
-        
-        if not df_sent.empty:
-            df_sent['date'] = doc.get('date', '2023-01-01') # Si no extrajo, proxy feo
-            df_sent['accession'] = doc.get('accession', '')
-            all_results.append(df_sent)
-            
+            if not df_risk.empty:
+                df_risk['date'] = doc.get('date', '2023-01-01')
+                df_risk['accession'] = doc.get('accession', '')
+                df_risk['risk_category'] = df_risk['sentence'].apply(preprocessor.categorize_risk)
+                all_risk_results.append(df_risk)
+                
         current_progress = 25 + int((i + 1) / len(raw_docs) * 50)
         progress_bar.progress(current_progress)
         
@@ -334,19 +351,24 @@ def run_analysis(ticker, num_reports):
     # ---------------------------------------------------------
     status_text.info("Fase 4/4: Calculando Z-Score y cruzando con YFinance...")
     
-    if not all_results:
-        st.warning("No se pudieron generar resultados a partir de los documentos.")
+    if not all_mda_results:
+        st.warning("No se pudieron generar resultados MD&A a partir de los documentos.")
         status_text.empty()
-        return None, None
+        return None, None, None, None
         
-    final_df = pd.concat(all_results, ignore_index=True)
+    final_mda_df = pd.concat(all_mda_results, ignore_index=True)
+    plot_path, summary_df, ys_success = viz.plot_sentiment_trend(final_mda_df, ticker=ticker)
     
-    # Generar Chart híbrido y resumen
-    plot_path, summary_df, ys_success = viz.plot_sentiment_trend(final_df, ticker=ticker)
+    # Process Risk Heatmap
+    heatmap_path = None
+    final_risk_df = pd.DataFrame()
+    if all_risk_results:
+        final_risk_df = pd.concat(all_risk_results, ignore_index=True)
+        heatmap_path = viz.plot_risk_heatmap(final_risk_df, ticker=ticker)
     
-    # Guardar CSV crudo
-    csv_path = os.path.join(output_dir, f"{ticker}_finsentiment_raw.csv")
-    final_df.to_csv(csv_path, index=False)
+    # Guardar CSV crudo MD&A
+    csv_path = os.path.join(output_dir, f"{ticker}_finsentiment_Mda.csv")
+    final_mda_df.to_csv(csv_path, index=False)
     
     progress_bar.progress(100)
     status_text.success(f"¡Análisis completado para {ticker}!")
@@ -354,11 +376,11 @@ def run_analysis(ticker, num_reports):
     if not ys_success:
         st.warning("⚠️ Yahoo Finance bloqueó la descarga del historial de precios (Típico en servidores Cloud gratuitos). El gráfico solo muestra la tendencia del Sentimiento Z-Score.")
 
-    # Construir un mini dataframe para la vista "Cruda" resumiendo por fechas para no asfixiar a streamlit
-    display_df = final_df[['date', 'sentence', 'sentiment_label', 'pos_val', 'neg_val']].copy()
+    # Construir un mini dataframe para la vista "Cruda"
+    display_df = final_mda_df[['date', 'sentence', 'sentiment_label', 'pos_val', 'neg_val']].copy()
     display_df['net_score'] = display_df['pos_val'] - display_df['neg_val']
     
-    return display_df, plot_path
+    return display_df, final_risk_df, plot_path, heatmap_path
 
 def main():
     st.markdown('<p class="main-header">FinSentiment 📊</p>', unsafe_allow_html=True)
@@ -402,12 +424,12 @@ def main():
             if not ticker_input:
                 st.warning("Por favor ingresa un Ticker válido.")
             else:
-                resultados_df, grafico_path = run_analysis(ticker_input, num_reports)
+                resultados_df, risk_df, grafico_path, heatmap_path = run_analysis(ticker_input, num_reports)
                 
                 if resultados_df is not None:
                     st.markdown("---")
                     
-                    tab1, tab2 = st.tabs(["Resumen & Visualización", "Datos Crudos"])
+                    tab1, tab_risk, tab2 = st.tabs(["Resumen MD&A", "🔥 Heatmap de Riesgos (Item 1A)", "Datos Crudos"])
                     
                     with tab1:
                         avg_sentiment = resultados_df['net_score'].mean()
@@ -415,7 +437,7 @@ def main():
                         total_sentences = len(resultados_df)
                         
                         col1, col2, col3 = st.columns(3)
-                        col1.metric("Sentimiento Z-Score Promedio", f"{avg_sentiment:.3f}", 
+                        col1.metric("Sentimiento Promedio", f"{avg_sentiment:.3f}", 
                                     delta="Optimista" if avg_sentiment > 0.05 else ("Pesimista" if avg_sentiment < -0.05 else "Neutral"),
                                     delta_color="normal" if avg_sentiment >= -0.05 else "inverse")
                         col2.metric("Tono Predominante", dominant_overall)
@@ -427,9 +449,24 @@ def main():
                             st.image(grafico_path, caption=f"Evolución del Sentimiento ({ticker_input})", use_container_width=True)
                         else:
                             st.info("No se generó el gráfico de evolución.")
+
+                    with tab_risk:
+                        st.markdown("### Mapa de Calor de Factores de Riesgo")
+                        st.markdown("Rastrea la aparición y la intensidad del sentimiento negativo en las secciones de **Risk Factors** a lo largo del tiempo. Áreas de color rojo intenso denotan una alta concentración de miedo explícitamente reportado a la SEC.")
+                        if heatmap_path and os.path.exists(heatmap_path):
+                            st.image(heatmap_path, caption=f"Heatmap de Riesgos Macroestructurales ({ticker_input})", use_container_width=True)
+                            
+                            if not risk_df.empty:
+                                with st.expander("Ver oraciones clasificadas por Miedo"):
+                                    # Mostrar los peores riesgos detectados
+                                    df_recent = risk_df.sort_values(by=['date', 'neg_val'], ascending=[False, False]).head(50)
+                                    df_recent = df_recent[['date', 'risk_category', 'sentence', 'neg_val']]
+                                    st.dataframe(df_recent.style.background_gradient(cmap='Reds', subset=['neg_val']), hide_index=True, use_container_width=True)
+                        else:
+                            st.info("No se detectaron reportes de riesgo Item 1A estructurados o carecen de contenido clasificable para este ticker.")
                             
                     with tab2:
-                        st.markdown("### Resultados por Documento")
+                        st.markdown("### Resultados MD&A (Sentencias Crudas)")
                         st.dataframe(
                             resultados_df.style.background_gradient(cmap='RdYlGn', subset=['net_score']),
                             use_container_width=True,
@@ -439,9 +476,9 @@ def main():
                         st.markdown("### Descargas")
                         csv_data = resultados_df.to_csv(index=False).encode('utf-8')
                         st.download_button(
-                            label="📥 Descargar datos como CSV",
+                            label="📥 Descargar Analítica MD&A como CSV",
                             data=csv_data,
-                            file_name=f'{ticker_input}_finsentiment_data.csv',
+                            file_name=f'{ticker_input}_finsentiment_mda.csv',
                             mime='text/csv',
                         )
         else:

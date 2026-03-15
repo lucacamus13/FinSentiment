@@ -66,6 +66,34 @@ class SECLoader:
             
         return text[start_idx:start_idx+30000] # Assume MD&A is within 30k chars
 
+    def extract_item_1a(self, html_content: str) -> str:
+        """
+        Extrae la sección 'Item 1A. Risk Factors' del documento SEC.
+        """
+        try:
+            soup = BeautifulSoup(html_content, 'lxml')
+        except:
+            soup = BeautifulSoup(html_content, 'html.parser')
+        
+        text = soup.get_text(separator='\n')
+        
+        patterns = [
+            r'Item\s+1A\.\s+Risk\s+Factors',
+            r'Item\s+1A\.',
+            r'Risk\s+Factors\:'
+        ]
+        start_idx = -1
+        for p in patterns:
+            match = re.search(p, text, re.IGNORECASE)
+            if match: 
+                start_idx = match.start()
+                break
+                
+        if start_idx == -1: 
+            return "" # Si no hay Item 1A explícito, devolvemos vacío
+            
+        return text[start_idx:start_idx+40000] # Assume Risk Factors within 40k chars
+
     def process_filings(self, ticker: str):
         raw_path = os.path.join(self.raw_dir, "sec-edgar-filings", ticker)
         processed_data = []
@@ -81,11 +109,14 @@ class SECLoader:
                             content = f.read()
                         
                         mda_text = self.extract_mda(content)
+                        risk_text = self.extract_item_1a(content)
                         date_str = self.extract_date(content)
                         
-                        if len(mda_text) > 500:
+                        # Guardamos el documento si logra rescatar al menos una de las dos secciones vitales
+                        if len(mda_text) > 500 or len(risk_text) > 500:
                             processed_data.append({
                                 'text': mda_text, 
+                                'risk_text': risk_text,
                                 'date': date_str, 
                                 'accession': file
                             })
