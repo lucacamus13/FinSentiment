@@ -160,10 +160,10 @@ def run_sector_analysis(tickers_list, num_reports):
     
     try:
         with st.spinner("Descargando datos de mercado desde Yahoo Finance..."):
-            market_data = yf.download(tickers_list, start=min_date, end=max_date, progress=False)
+            market_data = yf.download(tickers_list, start=min_date, end=max_date, progress=False, auto_adjust=True)
         
         if market_data.empty:
-            st.warning("No se pudieron descargar datos de Yahoo Finance. Los retornos se mostrarán como 0.")
+            st.warning("⚠️ Yahoo Finance bloquea descargas desde servidores cloud. El gráfico Alpha Hunter mostrará solo Z-Score.")
             df_latest['price_return_6m'] = 0.0
         else:
             close_prices = market_data['Close']
