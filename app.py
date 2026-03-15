@@ -155,37 +155,46 @@ def run_sector_analysis(tickers_list, num_reports):
     latest_indices = df_history.groupby('ticker')['date_obj'].idxmax()
     df_latest = df_history.loc[latest_indices].copy()
     
-    min_date = df_latest['date_obj'].min() - timedelta(days=5)
+    min_date = df_latest['date_obj'].min() - timedelta(days=10)
     max_date = datetime.now() + timedelta(days=1)
     
     try:
-        market_data = yf.download(tickers_list, start=min_date, end=max_date, progress=False)['Close']
-        if len(tickers_list) == 1:
-            market_data = pd.DataFrame({tickers_list[0]: market_data})
+        with st.spinner("Descargando datos de mercado desde Yahoo Finance..."):
+            market_data = yf.download(tickers_list, start=min_date, end=max_date, progress=False)
         
-        perf_list = []
-        for _, row in df_latest.iterrows():
-            t = row['ticker']
-            d_start = row['date_obj']
-            d_end = d_start + timedelta(days=180)
-            if d_end > datetime.now():
-                d_end = datetime.now() - timedelta(days=1)
+        if market_data.empty:
+            st.warning("No se pudieron descargar datos de Yahoo Finance. Los retornos se mostrarán como 0.")
+            df_latest['price_return_6m'] = 0.0
+        else:
+            close_prices = market_data['Close']
+            if len(tickers_list) == 1:
+                close_prices = pd.DataFrame({tickers_list[0]: close_prices})
             
-            if t in market_data.columns:
-                ts = market_data[t].dropna()
-                future_prices = ts[ts.index >= d_start]
-                past_prices = ts[ts.index <= d_end]
+            perf_list = []
+            for _, row in df_latest.iterrows():
+                t = row['ticker']
+                d_start = row['date_obj']
+                d_end = d_start + timedelta(days=180)
+                if d_end > datetime.now():
+                    d_end = datetime.now() - timedelta(days=1)
                 
-                if not future_prices.empty and not past_prices.empty:
-                    p_start = future_prices.iloc[0]
-                    p_end = past_prices.iloc[-1]
-                    perf_list.append((p_end - p_start) / p_start * 100)
+                if t in close_prices.columns:
+                    ts = close_prices[t].dropna()
+                    
+                    prices_after_filing = ts[ts.index >= d_start]
+                    prices_6m_later = ts[ts.index <= d_end]
+                    
+                    if not prices_after_filing.empty and not prices_6m_later.empty:
+                        p_start = prices_after_filing.iloc[0]
+                        p_end = prices_6m_later.iloc[-1]
+                        ret = ((p_end - p_start) / p_start) * 100
+                        perf_list.append(round(ret, 2))
+                    else:
+                        perf_list.append(0.0)
                 else:
                     perf_list.append(0.0)
-            else:
-                perf_list.append(0.0)
-                
-        df_latest['price_return_6m'] = perf_list
+                    
+            df_latest['price_return_6m'] = perf_list
     except Exception as e:
         st.warning(f"Error descargando datos de mercado: {e}")
         df_latest['price_return_6m'] = 0.0
