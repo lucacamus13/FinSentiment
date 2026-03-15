@@ -1,8 +1,10 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import matplotlib.pyplot as plt
+import seaborn as sns
+import yfinance as yf
 
 # Importar módulos del proyecto
 from src.ingestion import SECLoader
@@ -73,6 +75,148 @@ def load_finbert():
 @st.cache_resource
 def load_components():
     return SECLoader(data_dir="data"), TextPreprocessor(), SentimentVisualizer(output_dir="results")
+
+def run_sector_analysis(tickers_list, num_reports):
+    loader, preprocessor, _ = load_components()
+    model = load_finbert()
+    
+    output_dir = "results"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    status_text = st.empty()
+    progress_bar = st.progress(0)
+    
+    full_history_data = []
+    
+    for idx, ticker in enumerate(tickers_list):
+        status_text.info(f"Procesando {ticker} ({idx+1}/{len(tickers_list)})...")
+        
+        loader.download_filings(ticker, amount=num_reports)
+        raw_docs = loader.process_filings(ticker)
+        
+        if not raw_docs:
+            st.warning(f"No se procesaron reportes para {ticker}")
+            continue
+            
+        reports_to_scan = raw_docs[:num_reports]
+        
+        for doc in reports_to_scan:
+            report_date = doc.get('date', 'Unknown')
+            
+            cleaned_text = preprocessor.clean_text(doc['text'])
+            sentences = preprocessor.split_sentences(cleaned_text)
+            
+            if len(sentences) < 10:
+                continue
+                
+            df_sent = model.predict_batch(sentences, batch_size=32)
+            
+            if not df_sent.empty:
+                net_score = df_sent['pos_val'].mean() - df_sent['neg_val'].mean()
+                full_history_data.append({
+                    'ticker': ticker,
+                    'date': report_date,
+                    'net_score': net_score
+                })
+        
+        progress_bar.progress((idx + 1) / len(tickers_list))
+    
+    if not full_history_data:
+        st.warning("No se pudieron generar resultados para ningún ticker.")
+        return None, None, None
+    
+    df_history = pd.DataFrame(full_history_data)
+    df_history['date_obj'] = pd.to_datetime(df_history['date'], errors='coerce')
+    df_history['year'] = df_history['date_obj'].dt.year
+    
+    global_mean = df_history['net_score'].mean()
+    global_std = df_history['net_score'].std()
+    if global_std == 0:
+        global_std = 1
+    df_history['z_score'] = (df_history['net_score'] - global_mean) / global_std
+    
+    pivot_table = df_history.pivot_table(index='ticker', columns='year', values='z_score', aggfunc='mean')
+    
+    fig_heatmap, ax_heatmap = plt.subplots(figsize=(12, len(tickers_list) * 1.2 + 2))
+    sns.heatmap(
+        pivot_table, 
+        cmap='RdYlGn', 
+        center=0, 
+        annot=True, 
+        fmt=".2f", 
+        linewidths=.5, 
+        cbar_kws={'label': 'Z-Score'},
+        ax=ax_heatmap
+    )
+    ax_heatmap.set_title('Evolución Histórica del Sentimiento Sectorial', fontsize=16, fontweight='bold')
+    ax_heatmap.set_ylabel('Empresa')
+    ax_heatmap.set_xlabel('Año Fiscal')
+    
+    latest_indices = df_history.groupby('ticker')['date_obj'].idxmax()
+    df_latest = df_history.loc[latest_indices].copy()
+    
+    min_date = df_latest['date_obj'].min() - timedelta(days=5)
+    max_date = datetime.now() + timedelta(days=1)
+    
+    try:
+        market_data = yf.download(tickers_list, start=min_date, end=max_date, progress=False)['Close']
+        if len(tickers_list) == 1:
+            market_data = pd.DataFrame({tickers_list[0]: market_data})
+        
+        perf_list = []
+        for _, row in df_latest.iterrows():
+            t = row['ticker']
+            d_start = row['date_obj']
+            d_end = d_start + timedelta(days=180)
+            if d_end > datetime.now():
+                d_end = datetime.now() - timedelta(days=1)
+            
+            if t in market_data.columns:
+                ts = market_data[t].dropna()
+                future_prices = ts[ts.index >= d_start]
+                past_prices = ts[ts.index <= d_end]
+                
+                if not future_prices.empty and not past_prices.empty:
+                    p_start = future_prices.iloc[0]
+                    p_end = past_prices.iloc[-1]
+                    perf_list.append((p_end - p_start) / p_start * 100)
+                else:
+                    perf_list.append(0.0)
+            else:
+                perf_list.append(0.0)
+                
+        df_latest['price_return_6m'] = perf_list
+    except Exception as e:
+        st.warning(f"Error descargando datos de mercado: {e}")
+        df_latest['price_return_6m'] = 0.0
+    
+    fig_scatter, ax_scatter = plt.subplots(figsize=(12, 8))
+    sns.scatterplot(
+        data=df_latest, x='z_score', y='price_return_6m',
+        s=150, color='#2E86AB', edgecolor='black', alpha=0.8, ax=ax_scatter
+    )
+    for i in range(df_latest.shape[0]):
+        ax_scatter.text(
+            x=df_latest.z_score.iloc[i] + 0.02,
+            y=df_latest.price_return_6m.iloc[i] + 0.5,
+            s=df_latest.ticker.iloc[i],
+            fontweight='bold', fontsize=10
+        )
+    ax_scatter.axvline(0, color='gray', linestyle='--', alpha=0.6)
+    ax_scatter.axhline(0, color='gray', linestyle='--', alpha=0.6)
+    ax_scatter.set_title('Alpha Hunter: IA Sentiment vs 6-Month Post-Filing Return', fontsize=16, fontweight='bold')
+    ax_scatter.set_xlabel('Sentiment Z-Score (IA)')
+    ax_scatter.set_ylabel('Post-Filing Price Return (%)')
+    ax_scatter.grid(True, alpha=0.3)
+    
+    status_text.empty()
+    progress_bar.empty()
+    
+    csv_path = os.path.join(output_dir, "sector_analysis.csv")
+    df_history.to_csv(csv_path, index=False)
+    
+    return df_history, fig_heatmap, fig_scatter
+
 
 def run_analysis(ticker, num_reports):
     """
@@ -170,13 +314,9 @@ def main():
     # --- SIDEBAR ---
     with st.sidebar:
         st.header("⚙️ Configuración")
-        st.markdown("Configura los parámetros para la minería y análisis.")
+        st.markdown("Selecciona el tipo de análisis que deseas realizar.")
         
-        ticker_input = st.text_input("Ticker Bursátil", value="AAPL", help="Símbolo de la empresa en la bolsa (ej. MSFT, TSLA, AAPL)").upper()
-        num_reports = st.slider("Cantidad de Reportes a Analizar", min_value=1, max_value=10, value=3, 
-                                help="Cantidad histórica de reportes 10-K y 10-Q a descargar.")
-        
-        run_button = st.button("Ejecutar Análisis 🚀", use_container_width=True, type="primary")
+        page_option = st.selectbox("Tipo de Análisis", ["Análisis Individual", "Análisis Sectorial"])
         
         st.markdown("---")
         st.markdown("""
@@ -187,75 +327,117 @@ def main():
         4. Cuantifica el pesimismo/optimismo.
         """)
 
-    # --- MAIN CONTENT ---
-    if run_button:
-        if not ticker_input:
-            st.warning("Por favor ingresa un Ticker válido.")
-            st.stop()
-            
-        resultados_df, grafico_path = run_analysis(ticker_input, num_reports)
+    # --- PÁGINAS PRINCIPALES ---
+    tab_individual, tab_sector = st.tabs(["📈 Análisis Individual", "🏢 Análisis Sectorial"])
+    
+    # === PÁGINA ANÁLISIS INDIVIDUAL ===
+    with tab_individual:
+        st.markdown("### Configura tu análisis")
         
-        if resultados_df is not None:
-            st.markdown("---")
-            
-            # --- TABS ---
-            tab1, tab2 = st.tabs(["Resumen & Visualización", "Datos Crudos"])
-            
-            with tab1:
-                # Métricas Clave
-                col1, col2, col3 = st.columns(3)
+        col_config1, col_config2 = st.columns([1, 1])
+        with col_config1:
+            ticker_input = st.text_input("Ticker Bursátil", value="AAPL", 
+                                        help="Símbolo de la empresa en la bolsa (ej. MSFT, TSLA, AAPL)")
+            ticker_input = ticker_input.upper() if ticker_input else ""
+        with col_config2:
+            num_reports = st.slider("Cantidad de Reportes a Analizar", min_value=1, max_value=10, value=3, 
+                                    help="Cantidad histórica de reportes 10-K y 10-Q a descargar.")
+        
+        run_individual = st.button("Ejecutar Análisis Individual 🚀", type="primary")
+        
+        if run_individual:
+            if not ticker_input:
+                st.warning("Por favor ingresa un Ticker válido.")
+            else:
+                resultados_df, grafico_path = run_analysis(ticker_input, num_reports)
                 
-                avg_sentiment = resultados_df['net_score'].mean()
-                dominant_overall = resultados_df['sentiment_label'].mode()[0].capitalize()
-                total_sentences = len(resultados_df)
-                
-                col1.metric("Sentimiento Z-Score Promedio", f"{avg_sentiment:.3f}", 
-                            delta="Optimista" if avg_sentiment > 0.05 else ("Pesimista" if avg_sentiment < -0.05 else "Neutral"),
-                            delta_color="normal" if avg_sentiment >= -0.05 else "inverse")
-                col2.metric("Tono Predominante", dominant_overall)
-                col3.metric("Oraciones Analizadas", f"{total_sentences:,}")
-                
-                st.markdown("<br>", unsafe_allow_html=True)
-                
-                # Gráfico
-                if grafico_path and os.path.exists(grafico_path):
-                    st.image(grafico_path, caption=f"Evolución del Sentimiento ({ticker_input})", use_container_width=True)
-                else:
-                    st.info("No se generó el gráfico de evolución.")
+                if resultados_df is not None:
+                    st.markdown("---")
                     
-            with tab2:
-                st.markdown("### Resultados por Documento")
-                st.dataframe(
-                    resultados_df.style.background_gradient(cmap='RdYlGn', subset=['net_score']),
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                st.markdown("### Descargas")
-                csv_data = resultados_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Descargar datos como CSV",
-                    data=csv_data,
-                    file_name=f'{ticker_input}_finsentiment_data.csv',
-                    mime='text/csv',
-                )
-
-    else:
-        # Initial State Panel
-        st.info("👈 Ingresa un Ticker en la barra lateral y haz clic en 'Ejecutar Análisis' para comenzar.")
+                    tab1, tab2 = st.tabs(["Resumen & Visualización", "Datos Crudos"])
+                    
+                    with tab1:
+                        avg_sentiment = resultados_df['net_score'].mean()
+                        dominant_overall = resultados_df['sentiment_label'].mode()[0].capitalize()
+                        total_sentences = len(resultados_df)
+                        
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Sentimiento Z-Score Promedio", f"{avg_sentiment:.3f}", 
+                                    delta="Optimista" if avg_sentiment > 0.05 else ("Pesimista" if avg_sentiment < -0.05 else "Neutral"),
+                                    delta_color="normal" if avg_sentiment >= -0.05 else "inverse")
+                        col2.metric("Tono Predominante", dominant_overall)
+                        col3.metric("Oraciones Analizadas", f"{total_sentences:,}")
+                        
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        
+                        if grafico_path and os.path.exists(grafico_path):
+                            st.image(grafico_path, caption=f"Evolución del Sentimiento ({ticker_input})", use_container_width=True)
+                        else:
+                            st.info("No se generó el gráfico de evolución.")
+                            
+                    with tab2:
+                        st.markdown("### Resultados por Documento")
+                        st.dataframe(
+                            resultados_df.style.background_gradient(cmap='RdYlGn', subset=['net_score']),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        st.markdown("### Descargas")
+                        csv_data = resultados_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Descargar datos como CSV",
+                            data=csv_data,
+                            file_name=f'{ticker_input}_finsentiment_data.csv',
+                            mime='text/csv',
+                        )
+        else:
+            st.info("👆 Ingresa un Ticker y haz clic en 'Ejecutar Análisis Individual' para comenzar.")
+    
+    # === PÁGINA ANÁLISIS SECTORIAL ===
+    with tab_sector:
+        st.markdown("### Compara empresas o analiza una industria")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("""
-            **Sobre el Proyecto**\n
-            Este dashboard aplica IA sobre la base de datos de la SEC para encontrar el valor prospectivo oculto en los reportes anuales y trimestrales.
-            """)
-        with col2:
-            st.markdown("""
-            **Métricas Explicadas**\n
-            - **Sentimiento Neto**: `(Prob. Positiva - Prob. Negativa)`. Valores positivos indican optimismo gerencial.
-            - **Tono Predominante**: La clase (Positivo, Negativo o Neutral) con mayor probabilidad.
-            """)
+        col_config1, col_config2 = st.columns([2, 1])
+        with col_config1:
+            tickers_input = st.text_area("Tickers (separados por coma)", value="META, AAPL, MSFT, GOOGL, AMZN", 
+                                         help="Ej: META, AAPL, MSFT, GOOGL, AMZN")
+        with col_config2:
+            num_reports_sector = st.slider("Reportes por Ticker", min_value=1, max_value=10, value=3)
+        
+        run_sector = st.button("Ejecutar Análisis Sectorial 🚀", type="primary")
+        
+        if run_sector:
+            tickers_list = [t.strip().upper() for t in tickers_input.split(',') if t.strip()]
+            if not tickers_list:
+                st.warning("Por favor ingresa al menos un Ticker válido.")
+            else:
+                resultados_df, fig_heatmap, fig_scatter = run_sector_analysis(tickers_list, num_reports_sector)
+                
+                if resultados_df is not None:
+                    st.markdown("---")
+                    
+                    tab1, tab2, tab3 = st.tabs(["🔥 Heatmap Sectorial", "🎯 Alpha Hunter", "📊 Datos"])
+                    
+                    with tab1:
+                        st.pyplot(fig_heatmap)
+                        
+                    with tab2:
+                        st.pyplot(fig_scatter)
+                        
+                    with tab3:
+                        st.markdown("### Resultados por Empresa")
+                        st.dataframe(resultados_df, use_container_width=True)
+                        
+                        csv_data = resultados_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Descargar datos como CSV",
+                            data=csv_data,
+                            file_name='sector_analysis.csv',
+                            mime='text/csv',
+                        )
+        else:
+            st.info("👆 Ingresa varios Tickers separados por coma y haz clic en 'Ejecutar Análisis Sectorial' para comparar empresas.")
 
 if __name__ == "__main__":
     main()

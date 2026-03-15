@@ -22,8 +22,9 @@ class SECLoader:
     def download_filings(self, ticker: str, amount: int = 2) -> None:
         print(f"[>] [Ingesta] Iniciando descarga para {ticker}...")
         try:
-            self.downloader.get("10-K", ticker, limit=amount)
-            self.downloader.get("10-Q", ticker, limit=amount)
+            half = max(1, amount // 2)
+            self.downloader.get("10-K", ticker, limit=half)
+            self.downloader.get("10-Q", ticker, limit=amount - half)
             print(f"[+] Descarga completa para {ticker}.")
         except Exception as e:
             print(f"[!] Error en descarga para {ticker}: {e}")
